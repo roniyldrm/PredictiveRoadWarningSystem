@@ -37,7 +37,7 @@ from app.risk.formula import (
     derive_feature_dict,
 )
 from app.risk.model import FEATURE_ORDER, risk_model
-from app.risk.schemas import PredictRiskRequest, PredictRiskResponse
+from app.risk.schemas import PredictRiskRequest, PredictRiskResponse, RiskConditions
 from app.risk.weather import (
     RealTimeWeather,
     WeatherUnavailableError,
@@ -214,6 +214,13 @@ async def predict_risk(
         risk_score=blended_score,
         risk_level=risk_level,
         alert_message=alert_message,
+        conditions=RiskConditions(
+            h_loc_count=h_loc_count,
+            rain_mm=round(weather.rain_mm, 2),
+            visibility_m=round(weather.visibility_m, 0),
+            wind_speed=round(weather.wind_speed, 2),
+            temperature=round(weather.temperature, 1),
+        ),
     )
 
 

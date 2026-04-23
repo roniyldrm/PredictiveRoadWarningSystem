@@ -1,716 +1,511 @@
-import React, { useState, useEffect } from 'react';
+// Alerts tab — live road-risk snapshot for the driver's current location.
+//
+// Unlike the Live Drive tab (which polls while you're driving), this is a
+// point-in-time "how dangerous is it here, right now?" view. It:
+//   1. Grabs a single GPS fix via expo-location
+//   2. Posts it to /api/predict-risk
+//   3. Renders the risk score, level, alert message, weather + accident
+//      density that produced that score
+//   4. Supports pull-to-refresh
+//
+// Everything re-renders off a single `snapshot` object so there is zero
+// animation complexity — this screen is for at-a-glance reading.
+
+import React, { useCallback, useEffect, useState } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  StatusBar,
-  Animated,
+  ActivityIndicator,
+  RefreshControl,
   ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
-import { Ionicons, MaterialCommunityIcons, Feather } from '@expo/vector-icons';
+import * as Location from 'expo-location';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+
+import { useAuth } from '../auth/AuthContext';
+import { riskApi, ApiError } from '../api/client';
+import { hazardTypeFrom } from '../lib/hazard';
+import {
+  colors,
+  spacing,
+  radius,
+  elevation,
+  typography,
+  tapTarget,
+} from '../theme/colors';
+
+const RISK_STYLES = {
+  Low: { color: colors.safe, tint: colors.safeTint, label: 'LOW' },
+  Medium: { color: colors.warn, tint: colors.warnTint, label: 'MEDIUM' },
+  High: { color: colors.danger, tint: colors.dangerTint, label: 'HIGH' },
+};
+
+function riskStyle(level) {
+  return RISK_STYLES[level] || RISK_STYLES.Low;
+}
 
 export default function AlertSimulationScreen() {
-  const [alertState, setAlertState] = useState('alert');
-  const [pulseAnim] = useState(new Animated.Value(1));
-  const [fadeAnim] = useState(new Animated.Value(1));
+  const { token } = useAuth();
 
-  // Mock alert data - this would come from FastAPI backend
-  const alertData = {
-    riskScore: 0.87,
-    location: {
-      road: 'E-5 Highway',
-      segment: 'KM 42.3',
-      coordinates: '41.0082° N, 28.9784° E',
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [error, setError] = useState(null);
+  const [snapshot, setSnapshot] = useState(null);
+
+  const loadSnapshot = useCallback(
+    async ({ silent = false } = {}) => {
+      if (!token) return;
+      if (!silent) setIsLoading(true);
+      setError(null);
+
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          throw new Error(
+            'Location permission is required to read current road risk.',
+          );
+        }
+        const fix = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+        const { latitude, longitude, speed, heading } = fix.coords;
+        const result = await riskApi.predict(token, {
+          latitude,
+          longitude,
+          speed: Math.max(0, speed ?? 0),
+          heading: heading != null && heading >= 0 ? heading : 0,
+        });
+        setSnapshot({
+          takenAt: new Date(),
+          latitude,
+          longitude,
+          risk: result,
+        });
+      } catch (err) {
+        if (err instanceof ApiError) {
+          if (err.status === 502) {
+            setError('Weather service unavailable. Please retry shortly.');
+          } else if (err.status === 503) {
+            setError('Risk engine is warming up. Please retry shortly.');
+          } else {
+            setError(err.message);
+          }
+        } else {
+          setError(err.message || 'Unable to read current risk.');
+        }
+      } finally {
+        setIsLoading(false);
+        setIsRefreshing(false);
+      }
     },
-    riskFactors: {
-      historical: { value: 0.45, description: 'High accident frequency zone' },
-      weather: { value: 0.72, description: 'Heavy rain detected' },
-      temporal: { value: 0.38, description: 'Evening rush hour' },
-    },
-    hazards: [
-      { type: 'weather', icon: 'weather-pouring', label: 'Heavy Rain', severity: 'high' },
-      { type: 'road', icon: 'road-variant', label: 'Sharp Curve Ahead', severity: 'medium' },
-      { type: 'visibility', icon: 'eye-off', label: 'Reduced Visibility', severity: 'medium' },
-    ],
-    suggestion: {
-      action: 'Reduce Speed',
-      targetSpeed: 50,
-      currentSpeed: 72,
-    },
-    historicalData: {
-      accidentsLast5Years: 23,
-      fatalityRate: '8.7%',
-      commonCause: 'Weather + Speeding',
-    },
-  };
+    [token],
+  );
 
   useEffect(() => {
-    if (alertState === 'alert') {
-      const pulse = Animated.loop(
-        Animated.sequence([
-          Animated.timing(pulseAnim, { toValue: 1.08, duration: 600, useNativeDriver: true }),
-          Animated.timing(pulseAnim, { toValue: 1, duration: 600, useNativeDriver: true }),
-        ])
-      );
-      pulse.start();
-      return () => pulse.stop();
-    }
-  }, [alertState]);
+    loadSnapshot();
+  }, [loadSnapshot]);
 
-  const handleAcknowledge = () => {
-    setAlertState('acknowledged');
-    setTimeout(() => {
-      setAlertState('monitoring');
-      setTimeout(() => setAlertState('alert'), 4000);
-    }, 2500);
-  };
+  const onRefresh = useCallback(() => {
+    setIsRefreshing(true);
+    loadSnapshot({ silent: true });
+  }, [loadSnapshot]);
 
-  const getSeverityColor = (severity) => {
-    switch (severity) {
-      case 'high': return '#D32F2F';
-      case 'medium': return '#FF9800';
-      case 'low': return '#4CAF50';
-      default: return '#666';
-    }
-  };
+  // ---- render ----------------------------------------------------------
 
-  // ALERT STATE
-  const renderAlertState = () => (
-    <ScrollView style={styles.alertScroll} contentContainerStyle={styles.alertScrollContent}>
-      {/* Danger Header */}
-      <View style={styles.dangerHeader}>
-        <Animated.View style={[styles.warningIconOuter, { transform: [{ scale: pulseAnim }] }]}>
-          <View style={styles.warningIconInner}>
-            <Ionicons name="warning" size={44} color="#FFF" />
-          </View>
-        </Animated.View>
-        <Text style={styles.dangerTitle}>HIGH RISK DETECTED</Text>
-        <Text style={styles.dangerLocation}>
-          <Ionicons name="location" size={14} color="rgba(255,255,255,0.8)" /> {alertData.location.road}, {alertData.location.segment}
-        </Text>
+  if (isLoading && !snapshot) {
+    return (
+      <View style={styles.centered}>
+        <ActivityIndicator size="large" color={colors.text} />
+        <Text style={styles.centeredLabel}>Reading current conditions…</Text>
       </View>
+    );
+  }
 
-      {/* Risk Score Card */}
-      <View style={styles.contentContainer}>
-        <View style={styles.scoreCard}>
-          <View style={styles.scoreHeader}>
-            <Text style={styles.scoreLabel}>CALCULATED RISK SCORE</Text>
-            <Text style={styles.scoreFormula}></Text>
-          </View>
-          <View style={styles.scoreDisplay}>
-            <Text style={styles.scoreValue}>{(alertData.riskScore * 100).toFixed(0)}</Text>
-            <Text style={styles.scorePercent}>%</Text>
-          </View>
-          <View style={styles.scoreBar}>
-            <View style={[styles.scoreBarFill, { width: `${alertData.riskScore * 100}%` }]} />
-            <View style={[styles.scoreThreshold, { left: '30%' }]} />
-            <View style={[styles.scoreThreshold, { left: '70%' }]} />
-          </View>
-          <View style={styles.scoreLabels}>
-            <Text style={styles.scoreLabelText}>Low</Text>
-            <Text style={styles.scoreLabelText}>Medium</Text>
-            <Text style={styles.scoreLabelText}>High</Text>
-          </View>
+  if (error && !snapshot) {
+    return (
+      <View style={styles.centered}>
+        <View style={[styles.iconBubble, { backgroundColor: colors.dangerTint }]}>
+          <Ionicons name="cloud-offline-outline" size={36} color={colors.danger} />
         </View>
-
-        {/* Risk Factor Breakdown
-        <View style={styles.breakdownCard}>
-          <Text style={styles.sectionTitle}>Risk Factor Breakdown</Text>
-          
-          <View style={styles.factorRow}>
-            <View style={styles.factorLeft}>
-              <MaterialCommunityIcons name="map-marker-alert" size={20} color="#E53935" />
-              <View style={styles.factorInfo}>
-                <Text style={styles.factorName}>H(loc) - Historical</Text>
-                <Text style={styles.factorDesc}>{alertData.riskFactors.historical.description}</Text>
-              </View>
-            </View>
-            <Text style={styles.factorValue}></Text>
-          </View>
-
-          <View style={styles.factorRow}>
-            <View style={styles.factorLeft}>
-              <MaterialCommunityIcons name="weather-pouring" size={20} color="#2196F3" />
-              <View style={styles.factorInfo}>
-                <Text style={styles.factorName}>W(t) - Weather</Text>
-                <Text style={styles.factorDesc}>{alertData.riskFactors.weather.description}</Text>
-              </View>
-            </View>
-            <Text style={[styles.factorValue, { color: '#D32F2F' }]}></Text>
-          </View>
-
-          <View style={styles.factorRow}>
-            <View style={styles.factorLeft}>
-              <Ionicons name="time" size={20} color="#FF9800" />
-              <View style={styles.factorInfo}>
-                <Text style={styles.factorName}>T(t) - Temporal</Text>
-                <Text style={styles.factorDesc}>{alertData.riskFactors.temporal.description}</Text>
-              </View>
-            </View>
-            <Text style={styles.factorValue}></Text>
-          </View>
-        </View> */}
-
-        {/* Detected Hazards */}
-        <View style={styles.hazardsCard}>
-          <Text style={styles.sectionTitle}>Detected Hazards</Text>
-          <View style={styles.hazardsList}>
-            {alertData.hazards.map((hazard, index) => (
-              <View key={index} style={styles.hazardItem}>
-                <View style={[styles.hazardIcon, { backgroundColor: `${getSeverityColor(hazard.severity)}15` }]}>
-                  <MaterialCommunityIcons name={hazard.icon} size={22} color={getSeverityColor(hazard.severity)} />
-                </View>
-                <Text style={styles.hazardLabel}>{hazard.label}</Text>
-                <View style={[styles.severityDot, { backgroundColor: getSeverityColor(hazard.severity) }]} />
-              </View>
-            ))}
-          </View>
-        </View>
-
-        {/* Historical Context */}
-        {/* <View style={styles.historyCard}>
-          <Text style={styles.sectionTitle}>Historical Data (This Segment)</Text>
-          <View style={styles.historyGrid}>
-            <View style={styles.historyItem}>
-              <Text style={styles.historyValue}>{alertData.historicalData.accidentsLast5Years}</Text>
-              <Text style={styles.historyLabel}>Accidents (5yr)</Text>
-            </View>
-            <View style={styles.historyItem}>
-              <Text style={[styles.historyValue, { color: '#D32F2F' }]}>{alertData.historicalData.fatalityRate}</Text>
-              <Text style={styles.historyLabel}>Fatality Rate</Text>
-            </View>
-            <View style={styles.historyItem}>
-              <Text style={styles.historyValueSmall}>{alertData.historicalData.commonCause}</Text>
-              <Text style={styles.historyLabel}>Common Cause</Text>
-            </View>
-          </View>
-        </View> */}
-
-        {/* Recommendation */}
-        <View style={styles.recommendCard}>
-          <View style={styles.recommendHeader}>
-            <MaterialCommunityIcons name="lightbulb-on" size={24} color="#FF9800" />
-            <Text style={styles.recommendTitle}>RECOMMENDED ACTION</Text>
-          </View>
-          <View style={styles.speedRecommend}>
-            <View style={styles.speedCurrent}>
-              <Text style={styles.speedLabel}>Current</Text>
-              <Text style={styles.speedNum}>{alertData.suggestion.currentSpeed}</Text>
-              <Text style={styles.speedKmh}>km/h</Text>
-            </View>
-            <Ionicons name="arrow-forward" size={28} color="#666" />
-            <View style={styles.speedTarget}>
-              <Text style={styles.speedLabel}>Target</Text>
-              <Text style={[styles.speedNum, { color: '#4CAF50' }]}>{alertData.suggestion.targetSpeed}</Text>
-              <Text style={styles.speedKmh}>km/h</Text>
-            </View>
-          </View>
-        </View>
-
-        {/* Acknowledge Button */}
-        <TouchableOpacity style={styles.acknowledgeBtn} onPress={handleAcknowledge} activeOpacity={0.9}>
-          <Ionicons name="shield-checkmark" size={22} color="#FFF" />
-          <Text style={styles.acknowledgeBtnText}>I Understand - Proceed Safely</Text>
+        <Text style={[styles.centeredLabel, { marginTop: spacing.md }]}>{error}</Text>
+        <TouchableOpacity
+          style={styles.primaryButton}
+          onPress={() => loadSnapshot()}
+          accessibilityRole="button"
+        >
+          <Text style={styles.primaryButtonText}>Try again</Text>
         </TouchableOpacity>
+      </View>
+    );
+  }
 
-        <View style={{ height: 120 }} />
-      </View>
-    </ScrollView>
-  );
-
-  // ACKNOWLEDGED STATE
-  const renderAcknowledgedState = () => (
-    <View style={styles.acknowledgedContainer}>
-      <View style={styles.checkCircle}>
-        <Ionicons name="checkmark" size={60} color="#4CAF50" />
-      </View>
-      <Text style={styles.acknowledgedTitle}>Alert Acknowledged</Text>
-      <Text style={styles.acknowledgedSubtitle}>Proceed with caution</Text>
-      <View style={styles.speedReminderCard}>
-        <MaterialCommunityIcons name="speedometer-slow" size={32} color="#FF9800" />
-        <View style={styles.speedReminderText}>
-          <Text style={styles.speedReminderLabel}>Maintain safe speed</Text>
-          <Text style={styles.speedReminderValue}>≤ 50 km/h recommended</Text>
-        </View>
-      </View>
-    </View>
-  );
-
-  // MONITORING STATE (Safe)
-  const renderMonitoringState = () => (
-    <View style={styles.safeContainer}>
-      <View style={styles.safeHeader}>
-        <Text style={styles.safeHeaderTitle}>Alert Simulation</Text>
-        <Text style={styles.safeHeaderSubtitle}>Demonstrating the Predictive Road Warning System</Text>
-      </View>
-      <View style={styles.safeContent}>
-        <View style={styles.safeIconCircle}>
-          <Ionicons name="shield-checkmark" size={64} color="#4CAF50" />
-        </View>
-        <Text style={styles.safeTitle}>No Active Alerts</Text>
-        <Text style={styles.safeSubtitle}>Road conditions are within safe parameters</Text>
-        
-        <View style={styles.infoBox}>
-          <Feather name="info" size={18} color="#2196F3" />
-          <Text style={styles.infoText}>
-            This screen simulates how the app displays real-time risk alerts when the AI model detects dangerous conditions.
-          </Text>
-        </View>
-
-        <Text style={styles.demoTimer}>Demo alert appearing in 4 seconds...</Text>
-      </View>
-    </View>
-  );
+  const { risk, takenAt, latitude, longitude } = snapshot;
+  const conditions = risk.conditions || {};
+  const tier = riskStyle(risk.risk_level);
+  const hazardType = hazardTypeFrom(risk.alert_message);
+  const scoreRounded = Math.round(risk.risk_score ?? 0);
 
   return (
-    <View style={styles.container}>
-      <StatusBar barStyle={alertState === 'alert' ? 'light-content' : 'dark-content'} />
-      {alertState === 'alert' && renderAlertState()}
-      {alertState === 'acknowledged' && renderAcknowledgedState()}
-      {alertState === 'monitoring' && renderMonitoringState()}
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={styles.content}
+      refreshControl={
+        <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />
+      }
+    >
+      {/* Header */}
+      <View style={styles.header}>
+        <Text style={typography.label}>Current Road Risk</Text>
+        <Text style={styles.snapshotTime}>Updated {formatTime(takenAt)}</Text>
+      </View>
+
+      {/* Hero risk card */}
+      <View style={[styles.heroCard, { backgroundColor: tier.tint }]}>
+        <View style={styles.heroRow}>
+          <View style={[styles.badge, { backgroundColor: tier.color }]}>
+            <Text style={styles.badgeText}>{tier.label} RISK</Text>
+          </View>
+          <View style={styles.scoreGroup}>
+            <Text style={[styles.scoreValue, { color: tier.color }]}>{scoreRounded}</Text>
+            <Text style={[styles.scoreUnit, { color: tier.color }]}>/100</Text>
+          </View>
+        </View>
+
+        <Text style={styles.hazardType}>{hazardType}</Text>
+        {risk.alert_message ? (
+          <Text style={styles.hazardMessage}>{risk.alert_message}</Text>
+        ) : null}
+
+        <View style={[styles.scoreBarTrack, { backgroundColor: `${tier.color}20` }]}>
+          <View
+            style={[
+              styles.scoreBarFill,
+              {
+                backgroundColor: tier.color,
+                width: `${Math.min(100, Math.max(2, scoreRounded))}%`,
+              },
+            ]}
+          />
+          <View style={[styles.scoreThreshold, { left: '40%' }]} />
+          <View style={[styles.scoreThreshold, { left: '75%' }]} />
+        </View>
+        <View style={styles.scoreLegend}>
+          <Text style={styles.scoreLegendText}>Low</Text>
+          <Text style={[styles.scoreLegendText, { color: colors.warn }]}>Medium</Text>
+          <Text style={[styles.scoreLegendText, { color: colors.danger }]}>High</Text>
+        </View>
+      </View>
+
+      {/* Location card */}
+      <View style={styles.card}>
+        <Text style={typography.label}>Location</Text>
+        <View style={styles.locationRow}>
+          <View style={[styles.iconBubble, { backgroundColor: colors.accentTint }]}>
+            <Ionicons name="location" size={22} color={colors.accent} />
+          </View>
+          <View style={{ flex: 1, marginLeft: spacing.md }}>
+            <Text style={styles.latlonText}>
+              {latitude.toFixed(4)}°, {longitude.toFixed(4)}°
+            </Text>
+            <Text style={styles.mutedCaption}>
+              Read from your device's GPS
+            </Text>
+          </View>
+        </View>
+      </View>
+
+      {/* Conditions grid */}
+      <View style={styles.card}>
+        <Text style={typography.label}>Conditions</Text>
+        <View style={styles.grid}>
+          <Metric
+            icon={<MaterialCommunityIcons name="weather-pouring" size={22} color={colors.accent} />}
+            label="Rainfall"
+            value={`${conditions.rain_mm ?? 0} mm/h`}
+          />
+          <Metric
+            icon={<MaterialCommunityIcons name="eye" size={22} color={colors.accent} />}
+            label="Visibility"
+            value={
+              conditions.visibility_m != null
+                ? `${Math.round(conditions.visibility_m / 100) / 10} km`
+                : '—'
+            }
+          />
+          <Metric
+            icon={<MaterialCommunityIcons name="weather-windy" size={22} color={colors.accent} />}
+            label="Wind"
+            value={
+              conditions.wind_speed != null
+                ? `${conditions.wind_speed.toFixed(1)} m/s`
+                : '—'
+            }
+          />
+          <Metric
+            icon={<MaterialCommunityIcons name="thermometer" size={22} color={colors.accent} />}
+            label="Temperature"
+            value={
+              conditions.temperature != null
+                ? `${conditions.temperature.toFixed(1)}°C`
+                : '—'
+            }
+          />
+        </View>
+      </View>
+
+      {/* Accident history card */}
+      <View style={styles.card}>
+        <Text style={typography.label}>Historical Accidents (500m)</Text>
+        <View style={styles.locationRow}>
+          <View style={[styles.iconBubble, { backgroundColor: colors.dangerTint }]}>
+            <MaterialCommunityIcons
+              name="map-marker-alert"
+              size={22}
+              color={colors.danger}
+            />
+          </View>
+          <View style={{ flex: 1, marginLeft: spacing.md }}>
+            <Text style={styles.bigNumber}>{conditions.h_loc_count ?? 0}</Text>
+            <Text style={styles.mutedCaption}>
+              Known accidents within 500 m of this point in the last 5 years
+            </Text>
+          </View>
+        </View>
+      </View>
+
+      <TouchableOpacity
+        style={[styles.primaryButton, styles.refreshButton]}
+        onPress={() => loadSnapshot()}
+        accessibilityRole="button"
+        accessibilityLabel="Refresh risk snapshot"
+      >
+        <Ionicons name="refresh" size={20} color={colors.onPrimary} />
+        <Text style={[styles.primaryButtonText, { marginLeft: spacing.sm }]}>
+          Refresh
+        </Text>
+      </TouchableOpacity>
+
+      {error ? (
+        <Text style={styles.inlineError}>{error}</Text>
+      ) : null}
+
+      <View style={{ height: 120 }} />
+    </ScrollView>
+  );
+}
+
+function Metric({ icon, label, value }) {
+  return (
+    <View style={styles.metric}>
+      <View style={styles.metricIcon}>{icon}</View>
+      <Text style={styles.metricValue}>{value}</Text>
+      <Text style={styles.metricLabel}>{label}</Text>
     </View>
   );
 }
 
+function formatTime(d) {
+  if (!(d instanceof Date)) return '';
+  return d.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: colors.backgroundMuted,
   },
-  // Alert State
-  alertScroll: {
+  content: {
+    padding: spacing.md,
+    paddingTop: spacing.md,
+  },
+  centered: {
     flex: 1,
-    backgroundColor: '#C62828',
-  },
-  alertScrollContent: {
-    paddingBottom: 40,
-  },
-  dangerHeader: {
-    backgroundColor: '#C62828',
-    paddingTop: 70,
-    paddingBottom: 30,
     alignItems: 'center',
-  },
-  warningIconOuter: {
-    width: 90,
-    height: 90,
-    borderRadius: 45,
-    backgroundColor: 'rgba(0,0,0,0.15)',
     justifyContent: 'center',
-    alignItems: 'center',
+    backgroundColor: colors.background,
+    padding: spacing.lg,
   },
-  warningIconInner: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+  centeredLabel: {
+    ...typography.body,
+    color: colors.textMuted,
+    marginTop: spacing.md,
+    textAlign: 'center',
+  },
+  iconBubble: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: 'center',
     justifyContent: 'center',
-    alignItems: 'center',
   },
-  dangerTitle: {
-    fontSize: 24,
-    fontWeight: '800',
-    color: '#FFF',
-    marginTop: 16,
-    letterSpacing: 1,
+  header: {
+    marginBottom: spacing.md,
   },
-  dangerLocation: {
-    fontSize: 14,
-    color: 'rgba(255,255,255,0.85)',
-    marginTop: 8,
+  snapshotTime: {
+    ...typography.caption,
+    marginTop: 4,
   },
-  contentContainer: {
-    backgroundColor: '#F5F7FA',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    marginTop: -16,
-    padding: 20,
+  heroCard: {
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    marginBottom: spacing.md,
+    ...elevation.sm,
   },
-  scoreCard: {
-    backgroundColor: '#FFF',
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  scoreHeader: {
+  heroRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
   },
-  scoreLabel: {
+  badge: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 5,
+    borderRadius: radius.pill,
+  },
+  badgeText: {
+    color: colors.onPrimary,
     fontSize: 11,
-    fontWeight: '600',
-    color: '#666',
-    letterSpacing: 0.5,
+    fontWeight: '800',
+    letterSpacing: 0.6,
   },
-  scoreFormula: {
-    fontSize: 11,
-    fontFamily: 'monospace',
-    color: '#999',
-  },
-  scoreDisplay: {
+  scoreGroup: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
-    justifyContent: 'center',
-    marginBottom: 16,
+    alignItems: 'baseline',
   },
   scoreValue: {
-    fontSize: 56,
+    fontSize: 52,
     fontWeight: '800',
-    color: '#C62828',
+    letterSpacing: -1,
   },
-  scorePercent: {
-    fontSize: 24,
+  scoreUnit: {
+    fontSize: 20,
     fontWeight: '700',
-    color: '#C62828',
-    marginBottom: 10,
-    marginLeft: 2,
+    marginLeft: 4,
   },
-  scoreBar: {
-    height: 10,
-    backgroundColor: '#E0E0E0',
-    borderRadius: 5,
-    overflow: 'visible',
+  hazardType: {
+    ...typography.heading,
+    fontSize: 20,
+    marginTop: spacing.md,
+  },
+  hazardMessage: {
+    ...typography.body,
+    color: colors.textMuted,
+    marginTop: 6,
+  },
+  scoreBarTrack: {
+    height: 8,
+    borderRadius: 4,
+    marginTop: spacing.lg,
+    overflow: 'hidden',
     position: 'relative',
   },
   scoreBarFill: {
     height: '100%',
-    backgroundColor: '#C62828',
-    borderRadius: 5,
+    borderRadius: 4,
   },
   scoreThreshold: {
     position: 'absolute',
     top: -2,
     width: 2,
-    height: 14,
-    backgroundColor: '#666',
+    height: 12,
+    backgroundColor: 'rgba(15,23,42,0.28)',
   },
-  scoreLabels: {
+  scoreLegend: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginTop: 8,
-    paddingHorizontal: 4,
+    marginTop: 6,
   },
-  scoreLabelText: {
-    fontSize: 10,
-    color: '#999',
-  },
-  breakdownCard: {
-    backgroundColor: '#FFF',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  sectionTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#333',
-    marginBottom: 14,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  factorRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F5F5F5',
-  },
-  factorLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  factorInfo: {
-    marginLeft: 12,
-  },
-  factorName: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#333',
-  },
-  factorDesc: {
+  scoreLegendText: {
     fontSize: 11,
-    color: '#999',
-    marginTop: 2,
-  },
-  factorValue: {
-    fontSize: 16,
     fontWeight: '700',
-    color: '#333',
+    color: colors.safe,
+    letterSpacing: 0.4,
   },
-  hazardsCard: {
-    backgroundColor: '#FFF',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
+  card: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    marginBottom: spacing.md,
+    ...elevation.sm,
   },
-  hazardsList: {
-    gap: 10,
-  },
-  hazardItem: {
+  locationRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 12,
-    backgroundColor: '#FAFAFA',
-    borderRadius: 10,
+    marginTop: spacing.sm,
   },
-  hazardIcon: {
+  latlonText: {
+    ...typography.heading,
+    letterSpacing: 0.2,
+  },
+  mutedCaption: {
+    ...typography.caption,
+    marginTop: 4,
+  },
+  bigNumber: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: colors.text,
+    letterSpacing: -0.5,
+  },
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: spacing.sm,
+    marginHorizontal: -spacing.xs,
+  },
+  metric: {
+    width: '50%',
+    paddingHorizontal: spacing.xs,
+    paddingVertical: spacing.sm,
+  },
+  metricIcon: {
     width: 40,
     height: 40,
-    borderRadius: 10,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  hazardLabel: {
-    flex: 1,
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#333',
-    marginLeft: 12,
-  },
-  severityDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  historyCard: {
-    backgroundColor: '#FFF',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  historyGrid: {
-    flexDirection: 'row',
-  },
-  historyItem: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  historyValue: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: '#333',
-  },
-  historyValueSmall: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#333',
-    textAlign: 'center',
-  },
-  historyLabel: {
-    fontSize: 10,
-    color: '#999',
-    marginTop: 4,
-    textAlign: 'center',
-  },
-  recommendCard: {
-    backgroundColor: '#FFF8E1',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: '#FFE082',
-  },
-  recommendHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 14,
-  },
-  recommendTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#F57C00',
-    marginLeft: 8,
-    letterSpacing: 0.5,
-  },
-  speedRecommend: {
-    flexDirection: 'row',
+    borderRadius: 20,
+    backgroundColor: colors.accentTint,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 24,
+    marginBottom: spacing.xs,
   },
-  speedCurrent: {
-    alignItems: 'center',
-  },
-  speedTarget: {
-    alignItems: 'center',
-  },
-  speedLabel: {
-    fontSize: 11,
-    color: '#999',
-  },
-  speedNum: {
-    fontSize: 32,
+  metricValue: {
+    fontSize: 18,
     fontWeight: '800',
-    color: '#333',
+    color: colors.text,
   },
-  speedKmh: {
-    fontSize: 12,
-    color: '#666',
+  metricLabel: {
+    ...typography.caption,
   },
-  acknowledgeBtn: {
-    backgroundColor: '#C62828',
-    borderRadius: 14,
-    padding: 18,
-    flexDirection: 'row',
+  primaryButton: {
+    minHeight: tapTarget,
+    borderRadius: radius.md,
+    backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#C62828',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
+    paddingHorizontal: spacing.lg,
+    marginTop: spacing.md,
+    flexDirection: 'row',
+    ...elevation.md,
   },
-  acknowledgeBtnText: {
+  refreshButton: {
+    marginTop: 0,
+  },
+  primaryButtonText: {
+    color: colors.onPrimary,
     fontSize: 16,
     fontWeight: '700',
-    color: '#FFF',
-    marginLeft: 10,
+    letterSpacing: 0.3,
   },
-  // Acknowledged State
-  acknowledgedContainer: {
-    flex: 1,
-    backgroundColor: '#E8F5E9',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 30,
-  },
-  checkCircle: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: '#FFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#4CAF50',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.2,
-    shadowRadius: 16,
-    elevation: 10,
-    marginBottom: 24,
-  },
-  acknowledgedTitle: {
-    fontSize: 26,
-    fontWeight: '700',
-    color: '#2E7D32',
-  },
-  acknowledgedSubtitle: {
-    fontSize: 16,
-    color: '#4CAF50',
-    marginTop: 8,
-  },
-  speedReminderCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFF',
-    padding: 20,
-    borderRadius: 16,
-    marginTop: 30,
-  },
-  speedReminderText: {
-    marginLeft: 16,
-  },
-  speedReminderLabel: {
-    fontSize: 14,
-    color: '#666',
-  },
-  speedReminderValue: {
-    fontSize: 16,
+  inlineError: {
+    marginTop: spacing.md,
+    padding: spacing.md,
+    backgroundColor: colors.dangerTint,
+    color: colors.danger,
     fontWeight: '600',
-    color: '#333',
-    marginTop: 2,
-  },
-  // Safe/Monitoring State
-  safeContainer: {
-    flex: 1,
-    backgroundColor: '#F5F7FA',
-  },
-  safeHeader: {
-    backgroundColor: '#FFF',
-    paddingTop: 60,
-    paddingHorizontal: 20,
-    paddingBottom: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E0E0E0',
-  },
-  safeHeaderTitle: {
-    fontSize: 26,
-    fontWeight: '700',
-    color: '#333',
-  },
-  safeHeaderSubtitle: {
-    fontSize: 14,
-    color: '#666',
-    marginTop: 4,
-  },
-  safeContent: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 30,
-    paddingBottom: 120,
-  },
-  safeIconCircle: {
-    width: 130,
-    height: 130,
-    borderRadius: 65,
-    backgroundColor: '#E8F5E9',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  safeTitle: {
-    fontSize: 26,
-    fontWeight: '700',
-    color: '#333',
-  },
-  safeSubtitle: {
-    fontSize: 15,
-    color: '#666',
-    marginTop: 8,
-  },
-  infoBox: {
-    flexDirection: 'row',
-    backgroundColor: '#E3F2FD',
-    padding: 16,
-    borderRadius: 12,
-    marginTop: 30,
-    marginHorizontal: 10,
-  },
-  infoText: {
-    flex: 1,
-    fontSize: 13,
-    color: '#1976D2',
-    marginLeft: 12,
-    lineHeight: 20,
-  },
-  demoTimer: {
-    fontSize: 13,
-    color: '#999',
-    marginTop: 30,
+    borderRadius: radius.md,
+    textAlign: 'center',
   },
 });

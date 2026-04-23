@@ -4,7 +4,6 @@ import {
   StatusBar,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
@@ -16,28 +15,30 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import LiveDriveScreen from './screens/LiveDriveScreen';
 import AlertSimulationScreen from './screens/AlertSimulationScreen';
 import HistoryScreen from './screens/HistoryScreen';
+import AccountScreen from './screens/AccountScreen';
 import LoginScreen from './screens/LoginScreen';
 
 import { AuthProvider, useAuth } from './auth/AuthContext';
-import { colors } from './theme/colors';
+import { colors, elevation } from './theme/colors';
 
 const Tab = createBottomTabNavigator();
 const RootStack = createNativeStackNavigator();
 
-function LogoutButton() {
-  const { signOut } = useAuth();
+function TabIconPill({ focused, children, tint }) {
   return (
-    <TouchableOpacity
-      onPress={signOut}
-      accessibilityRole="button"
-      accessibilityLabel="Sign out"
-      hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-      style={styles.logoutButton}
-      activeOpacity={0.7}
+    <View
+      style={{
+        backgroundColor: focused ? tint : 'transparent',
+        paddingHorizontal: 10,
+        paddingVertical: 3,
+        borderRadius: 999,
+        alignItems: 'center',
+        justifyContent: 'center',
+        minWidth: 40,
+      }}
     >
-      <Ionicons name="log-out-outline" size={22} color={colors.text} />
-      <Text style={styles.logoutLabel}>Sign out</Text>
-    </TouchableOpacity>
+      {children}
+    </View>
   );
 }
 
@@ -45,39 +46,40 @@ function MainTabs() {
   return (
     <Tab.Navigator
       screenOptions={{
-        headerShown: true,
         headerStyle: {
           backgroundColor: colors.background,
         },
         headerTitleStyle: {
           color: colors.text,
           fontSize: 17,
-          fontWeight: '700',
+          fontWeight: '800',
         },
         headerShadowVisible: false,
-        headerRight: () => <LogoutButton />,
         tabBarStyle: {
-          backgroundColor: '#FFFFFF',
+          backgroundColor: colors.background,
           borderTopWidth: 0,
-          height: 70,
-          paddingTop: 8,
+          height: 72,
+          paddingTop: 6,
           paddingBottom: 10,
-          paddingHorizontal: 10,
+          // No horizontal padding — each tab gets flex:1 of the full width
+          // so 4 tabs fit even on narrow devices without clipping icons.
+          paddingHorizontal: 0,
           position: 'absolute',
-          shadowColor: '#000',
-          shadowOffset: { width: 0, height: -4 },
-          shadowOpacity: 0.08,
-          shadowRadius: 12,
-          elevation: 20,
+          ...elevation.lg,
         },
-        tabBarActiveTintColor: '#2196F3',
-        tabBarInactiveTintColor: '#9E9E9E',
+        tabBarItemStyle: {
+          paddingHorizontal: 0,
+        },
+        tabBarActiveTintColor: colors.primary,
+        tabBarInactiveTintColor: colors.textSubtle,
         tabBarLabelStyle: {
           fontSize: 11,
-          fontWeight: '600',
+          fontWeight: '700',
           marginTop: 2,
           marginBottom: 4,
+          letterSpacing: 0.1,
         },
+        tabBarAllowFontScaling: false,
       }}
     >
       <Tab.Screen
@@ -85,21 +87,16 @@ function MainTabs() {
         component={LiveDriveScreen}
         options={{
           title: 'Live Drive',
-          tabBarLabel: 'Live Drive',
+          tabBarLabel: 'Live',
+          headerShown: false,
           tabBarIcon: ({ color, focused }) => (
-            <View
-              style={{
-                backgroundColor: focused ? '#E3F2FD' : 'transparent',
-                padding: 8,
-                borderRadius: 12,
-              }}
-            >
+            <TabIconPill focused={focused} tint={colors.accentTint}>
               <MaterialCommunityIcons
                 name="navigation-variant"
-                size={24}
+                size={22}
                 color={color}
               />
-            </View>
+            </TabIconPill>
           ),
         }}
       />
@@ -110,19 +107,13 @@ function MainTabs() {
           title: 'Alerts',
           tabBarLabel: 'Alerts',
           tabBarIcon: ({ color, focused }) => (
-            <View
-              style={{
-                backgroundColor: focused ? '#FFEBEE' : 'transparent',
-                padding: 8,
-                borderRadius: 12,
-              }}
-            >
+            <TabIconPill focused={focused} tint={colors.dangerTint}>
               <Ionicons
                 name="warning"
-                size={24}
-                color={focused ? '#D32F2F' : color}
+                size={22}
+                color={focused ? colors.danger : color}
               />
-            </View>
+            </TabIconPill>
           ),
         }}
       />
@@ -133,15 +124,30 @@ function MainTabs() {
           title: 'History',
           tabBarLabel: 'History',
           tabBarIcon: ({ color, focused }) => (
-            <View
-              style={{
-                backgroundColor: focused ? '#E3F2FD' : 'transparent',
-                padding: 8,
-                borderRadius: 12,
-              }}
-            >
-              <Ionicons name="time" size={24} color={color} />
-            </View>
+            <TabIconPill focused={focused} tint={colors.safeTint}>
+              <Ionicons
+                name="time-outline"
+                size={22}
+                color={focused ? colors.safe : color}
+              />
+            </TabIconPill>
+          ),
+        }}
+      />
+      <Tab.Screen
+        name="Account"
+        component={AccountScreen}
+        options={{
+          title: 'Account',
+          tabBarLabel: 'Account',
+          tabBarIcon: ({ color, focused }) => (
+            <TabIconPill focused={focused} tint={colors.accentTint}>
+              <Ionicons
+                name="person-circle-outline"
+                size={22}
+                color={color}
+              />
+            </TabIconPill>
           ),
         }}
       />
@@ -190,20 +196,6 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  logoutButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginRight: 8,
-    minHeight: 48,
-  },
-  logoutLabel: {
-    marginLeft: 6,
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.text,
-  },
   bootContainer: {
     flex: 1,
     alignItems: 'center',

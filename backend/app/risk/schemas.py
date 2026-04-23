@@ -157,6 +157,21 @@ class PredictRiskRequest(BaseModel):
     )
 
 
+class RiskConditions(BaseModel):
+    """Context the server used to compute the risk score — surfaced so the
+    client can explain *why* the score is what it is (weather, accident
+    history, etc.) without re-deriving it.
+    """
+
+    h_loc_count: int = Field(
+        description="Historical accident count within nearby_radius_m.",
+    )
+    rain_mm: float = Field(description="Instantaneous rainfall (mm/h).")
+    visibility_m: float = Field(description="Visibility in metres.")
+    wind_speed: float = Field(description="Wind speed in m/s.")
+    temperature: float = Field(description="Air temperature in °C.")
+
+
 class PredictRiskResponse(BaseModel):
     """Output of POST /api/predict-risk."""
 
@@ -167,4 +182,8 @@ class PredictRiskResponse(BaseModel):
     risk_level: str = Field(description="Low | Medium | High.")
     alert_message: str = Field(
         description="Short human-readable description of the dominant hazards.",
+    )
+    conditions: Optional[RiskConditions] = Field(
+        default=None,
+        description="Weather + accident-density signals used for the score.",
     )

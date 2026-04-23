@@ -30,12 +30,29 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 
 import { useAuth } from '../auth/AuthContext';
 import { historyApi, ApiError } from '../api/client';
-import { colors, spacing, radius, typography, tapTarget } from '../theme/colors';
+import {
+  colors,
+  spacing,
+  radius,
+  typography,
+  tapTarget,
+  elevation,
+} from '../theme/colors';
 
 const RISK_TIERS = [
-  { threshold: 0.4, label: 'LOW', color: colors.safe },
-  { threshold: 0.75, label: 'MEDIUM', color: '#F39C12' },
-  { threshold: Infinity, label: 'HIGH', color: colors.danger },
+  { threshold: 0.4, label: 'LOW', color: colors.safe, tint: colors.safeTint },
+  {
+    threshold: 0.75,
+    label: 'MEDIUM',
+    color: colors.warn,
+    tint: colors.warnTint,
+  },
+  {
+    threshold: Infinity,
+    label: 'HIGH',
+    color: colors.danger,
+    tint: colors.dangerTint,
+  },
 ];
 
 function tierFor(avg01) {
@@ -254,7 +271,7 @@ export default function HistoryScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.background,
+    backgroundColor: colors.backgroundMuted,
   },
   centered: {
     flex: 1,
@@ -309,14 +326,13 @@ const styles = StyleSheet.create({
   card: {
     flexDirection: 'row',
     backgroundColor: colors.surface,
-    borderRadius: radius.md,
+    borderRadius: radius.lg,
     marginBottom: spacing.md,
     overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: colors.border,
+    ...elevation.sm,
   },
   riskStrip: {
-    width: 6,
+    width: 5,
   },
   cardBody: {
     flex: 1,
@@ -329,8 +345,9 @@ const styles = StyleSheet.create({
   },
   dateText: {
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: '800',
     color: colors.text,
+    letterSpacing: -0.2,
   },
   timeText: {
     fontSize: 13,

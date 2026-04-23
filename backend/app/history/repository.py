@@ -15,8 +15,10 @@ async def create(user_id: ObjectId, payload: TripCreate) -> TripInDB:
     doc = payload.model_dump(mode="python")
     doc["user_id"] = user_id
     doc["created_at"] = datetime.now(timezone.utc)
-    result = await get_collection(TRIPS_COLLECTION).insert_one(doc)
-    return TripInDB(_id=result.inserted_id, **doc)
+    # motor/pymongo's insert_one mutates `doc` in-place to add the generated
+    # "_id" key, so we must NOT also pass _id explicitly below.
+    await get_collection(TRIPS_COLLECTION).insert_one(doc)
+    return TripInDB(**doc)
 
 
 async def list_for_user(

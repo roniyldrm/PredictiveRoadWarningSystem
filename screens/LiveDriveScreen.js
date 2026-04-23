@@ -48,13 +48,21 @@ import {
 import * as Location from 'expo-location';
 import * as Speech from 'expo-speech';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '../auth/AuthContext';
 import { riskApi, historyApi, ApiError } from '../api/client';
 import AlertModal from '../components/AlertModal';
 import RiskTrail, { RISK_COLORS } from '../components/RiskTrail';
 import { hazardTypeFrom, voicePhraseFor } from '../lib/hazard';
-import { colors, spacing, radius, tapTarget, typography } from '../theme/colors';
+import {
+  colors,
+  spacing,
+  radius,
+  tapTarget,
+  typography,
+  elevation,
+} from '../theme/colors';
 
 // Metro picks NativeMapModules.native.js on iOS/Android and
 // NativeMapModules.web.js on web. The web shim exports nulls, so
@@ -84,6 +92,29 @@ const INITIAL_REGION = {
   latitudeDelta: 0.02,
   longitudeDelta: 0.02,
 };
+
+// Dark Google Maps style for night mode. Applied via MapView's
+// `customMapStyle` on Android; silently ignored on iOS (Apple Maps).
+const NIGHT_MAP_STYLE = [
+  { elementType: 'geometry', stylers: [{ color: '#242f3e' }] },
+  { elementType: 'labels.text.stroke', stylers: [{ color: '#242f3e' }] },
+  { elementType: 'labels.text.fill', stylers: [{ color: '#746855' }] },
+  { featureType: 'administrative.locality', elementType: 'labels.text.fill', stylers: [{ color: '#d59563' }] },
+  { featureType: 'poi', elementType: 'labels.text.fill', stylers: [{ color: '#d59563' }] },
+  { featureType: 'poi.park', elementType: 'geometry', stylers: [{ color: '#263c3f' }] },
+  { featureType: 'poi.park', elementType: 'labels.text.fill', stylers: [{ color: '#6b9a76' }] },
+  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#38414e' }] },
+  { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#212a37' }] },
+  { featureType: 'road', elementType: 'labels.text.fill', stylers: [{ color: '#9ca5b3' }] },
+  { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#746855' }] },
+  { featureType: 'road.highway', elementType: 'geometry.stroke', stylers: [{ color: '#1f2835' }] },
+  { featureType: 'road.highway', elementType: 'labels.text.fill', stylers: [{ color: '#f3d19c' }] },
+  { featureType: 'transit', elementType: 'geometry', stylers: [{ color: '#2f3948' }] },
+  { featureType: 'transit.station', elementType: 'labels.text.fill', stylers: [{ color: '#d59563' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#17263c' }] },
+  { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#515c6d' }] },
+  { featureType: 'water', elementType: 'labels.text.stroke', stylers: [{ color: '#17263c' }] },
+];
 
 // ---------------------------------------------------------------------
 // Isolated user marker — only this subtree re-renders on each GPS tick.
@@ -133,6 +164,7 @@ const markerStyles = StyleSheet.create({
 
 export default function LiveDriveScreen() {
   const { token } = useAuth();
+  const insets = useSafeAreaInsets();
 
   // Driving session state
   const [isActive, setIsActive] = useState(false);
@@ -160,6 +192,8 @@ export default function LiveDriveScreen() {
   const [alertCount, setAlertCount] = useState(0);
   // Trip-saving progress indicator (for the stop button).
   const [savingTrip, setSavingTrip] = useState(false);
+  // Day / night map theme toggle — shows sun or moon icon.
+  const [isNightMode, setIsNightMode] = useState(false);
 
   // Refs: hot values read without re-renders.
   const mapRef = useRef(null);
@@ -534,6 +568,10 @@ export default function LiveDriveScreen() {
           style={StyleSheet.absoluteFillObject}
           provider={PROVIDER_DEFAULT}
           initialRegion={INITIAL_REGION}
+          // Android (Google Maps) honors customMapStyle. iOS (Apple Maps)
+          // ignores it silently, so night mode there just toggles the
+          // button state — still useful for a consistent UI.
+          customMapStyle={isNightMode ? NIGHT_MAP_STYLE : []}
           showsCompass={false}
           showsMyLocationButton={false}
           showsUserLocation={false}
@@ -561,7 +599,10 @@ export default function LiveDriveScreen() {
 
       {/* Top status bar (hidden while the alert banner is covering the top half) */}
       {!alertVisible ? (
-        <View style={styles.hudTop} pointerEvents="none">
+        <View
+          style={[styles.hudTop, { top: insets.top + spacing.sm }]}
+          pointerEvents="none"
+        >
           <View style={[styles.riskPill, { backgroundColor: statusColor }]}>
             <Text style={styles.riskPillText}>
               {risk?.risk_level ? risk.risk_level.toUpperCase() : 'MONITORING'}
@@ -585,15 +626,44 @@ export default function LiveDriveScreen() {
       ) : null}
 
       {/* Speed panel */}
-      {speedKmh !== null ? (
-        <View style={styles.speedPanel} pointerEvents="none">
+      {speedKmh !== null && !alertVisible ? (
+        <View
+          style={[styles.speedPanel, { top: insets.top + 76 }]}
+          pointerEvents="none"
+        >
           <Text style={styles.speedValue}>{speedKmh}</Text>
           <Text style={styles.speedUnit}>km/h</Text>
         </View>
       ) : null}
 
-      {/* Bottom action bar */}
-      <View style={styles.bottomBar}>
+      {/* Day / Night toggle — top-right, offset below the speed panel */}
+      {!alertVisible ? (
+        <TouchableOpacity
+          style={[
+            styles.mapThemeToggle,
+            {
+              top:
+                insets.top +
+                (speedKmh !== null ? 76 + 72 : 76),
+            },
+          ]}
+          onPress={() => setIsNightMode((v) => !v)}
+          accessibilityRole="button"
+          accessibilityLabel={
+            isNightMode ? 'Switch to day map' : 'Switch to night map'
+          }
+          activeOpacity={0.85}
+        >
+          <Ionicons
+            name={isNightMode ? 'sunny' : 'moon'}
+            size={22}
+            color={colors.text}
+          />
+        </TouchableOpacity>
+      ) : null}
+
+      {/* Bottom action bar — keeps clear of tab bar + phone gesture bar */}
+      <View style={[styles.bottomBar, { bottom: 70 + Math.max(insets.bottom, 16) + 16 }]}>
         {permissionError ? (
           <Text style={styles.permissionError}>{permissionError}</Text>
         ) : null}
@@ -673,7 +743,6 @@ const styles = StyleSheet.create({
   },
   hudTop: {
     position: 'absolute',
-    top: spacing.md,
     left: spacing.md,
     right: spacing.md,
     alignItems: 'flex-start',
@@ -681,67 +750,81 @@ const styles = StyleSheet.create({
   },
   riskPill: {
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-    borderRadius: radius.md,
+    paddingVertical: 8,
+    borderRadius: radius.pill,
+    ...elevation.md,
   },
   riskPillText: {
     color: colors.onPrimary,
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '800',
-    letterSpacing: 0.5,
+    letterSpacing: 0.7,
   },
   alertLine: {
-    backgroundColor: colors.background,
+    backgroundColor: colors.surface,
     color: colors.text,
     fontSize: 14,
     fontWeight: '600',
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.sm,
+    paddingVertical: 10,
+    borderRadius: radius.md,
     overflow: 'hidden',
+    ...elevation.sm,
   },
   errorLine: {
     backgroundColor: colors.danger,
     color: colors.onPrimary,
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '700',
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-    borderRadius: radius.sm,
+    paddingVertical: 8,
+    borderRadius: radius.md,
     overflow: 'hidden',
+    ...elevation.sm,
   },
   speedPanel: {
     position: 'absolute',
     right: spacing.md,
-    top: 80,
-    backgroundColor: colors.background,
-    paddingVertical: spacing.sm,
+    backgroundColor: colors.surface,
+    paddingVertical: 10,
     paddingHorizontal: spacing.md,
-    borderRadius: radius.md,
+    borderRadius: radius.lg,
     alignItems: 'center',
     justifyContent: 'center',
-    minWidth: 80,
-    shadowColor: '#000',
-    shadowOpacity: 0.1,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 3,
+    minWidth: 88,
+    ...elevation.md,
+  },
+  mapThemeToggle: {
+    position: 'absolute',
+    right: spacing.md,
+    width: 48,
+    height: 48,
+    marginTop: -140,
+    borderRadius: 24,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...elevation.md,
   },
   speedValue: {
-    fontSize: 28,
+    fontSize: 32,
     fontWeight: '800',
     color: colors.text,
+    letterSpacing: -1,
   },
   speedUnit: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.textSubtle,
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
   },
   bottomBar: {
     position: 'absolute',
     left: spacing.md,
     right: spacing.md,
-    bottom: 100,
+    // `bottom` is set dynamically at the use-site based on safe-area insets
+    // (tab bar is 70px, then we lift by inset + a fixed margin).
     alignItems: 'stretch',
   },
   permissionError: {
@@ -756,11 +839,12 @@ const styles = StyleSheet.create({
   primaryButton: {
     minHeight: tapTarget,
     backgroundColor: colors.primary,
-    borderRadius: radius.md,
+    borderRadius: radius.lg,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: spacing.md,
+    ...elevation.lg,
   },
   stopButton: {
     backgroundColor: colors.danger,
