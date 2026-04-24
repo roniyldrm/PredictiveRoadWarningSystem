@@ -98,17 +98,9 @@ cd RoadWarningSystem   # repo root containing package.json
 npm install
 ```
 
-### API base URL
-
-The client reads **`EXPO_PUBLIC_API_URL`**. If unset, it falls back to `http://localhost:8000` on web and `http://10.0.2.2:8000` on the Android emulator.
-
-For a **physical device** on the same LAN as your dev machine, point the variable at your computer’s reachable address, for example:
-
 ```bash
 EXPO_PUBLIC_API_URL=http://192.168.1.10:8000 npx expo start
 ```
-
-Ensure the host firewall allows inbound traffic to the API port (and to Metro if you use Expo Go). Tunnels (ngrok, localtunnel) work if you set the public URL here; some tunnel providers need special headers on the first request (the included client sets common bypass headers).
 
 ### Run
 
@@ -119,15 +111,3 @@ npx expo start
 Then press `i` / `a` / `w` for iOS simulator, Android emulator, or web. Full **map and GPS** behaviour is only meaningful on **iOS** or **Android**; web is useful for auth and non-map screens.
 
 ---
-
-## Security notes
-
-- Never commit `.env` or real API keys. Rotate keys if they leak.
-- Use HTTPS in production and put the API behind a reverse proxy; the app is written to trust standard forwarded headers when configured.
-- JWTs are bearer tokens; protect device storage (Expo Secure Store) and treat logout as clearing the token.
-
----
-
-## Academic / scope note
-
-This repository is developed as a **degree project** prototype. It is not a certified safety product; risk scores are **indicative** and depend on data quality, model assumptions, and network availability.
