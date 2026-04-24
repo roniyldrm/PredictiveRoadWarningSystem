@@ -1,5 +1,9 @@
 # Predictive Road Warning System / RoadSense
 
+| Live Drive | Trip summary (completion) |
+|:----------:|:-------------------------:|
+| <img src="inAppScreenshots/start.jpeg" width="320" alt="RoadSense — Live Drive" /> | <img src="inAppScreenshots/tripcomp.jpeg" width="320" alt="RoadSense — trip summary modal" /> |
+
 RoadSense is a preventive road-risk assistant: a mobile client records where and when you drive, a FastAPI backend fuses live weather, local historical accident density from MongoDB, and a trained regression model, then returns a risk score and short text the app can show or read aloud.
 
 The stack is **Expo (React Native)** for the app, **FastAPI + Motor** for the API, **MongoDB Atlas** for users, UK-sourced accident records, and saved trips, and **scikit-learn** (Random Forest) for the core model. The historical accident layer is imported from a public **UK Road Safety** extract; live weather comes from **OpenWeatherMap**. Treating Turkey (or any region) as “fully calibrated” by that UK spatial layer is a known limitation and should be documented in any formal write-up.
