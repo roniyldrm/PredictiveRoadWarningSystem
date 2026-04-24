@@ -1,4 +1,4 @@
-# RoadSense
+# Predictive Road Warning System / RoadSense
 
 RoadSense is a preventive road-risk assistant: a mobile client records where and when you drive, a FastAPI backend fuses live weather, local historical accident density from MongoDB, and a trained regression model, then returns a risk score and short text the app can show or read aloud.
 
