@@ -47,14 +47,16 @@ import {
 } from 'react-native';
 import * as Location from 'expo-location';
 import * as Speech from 'expo-speech';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '../auth/AuthContext';
 import { riskApi, historyApi, ApiError } from '../api/client';
 import AlertModal from '../components/AlertModal';
 import RiskTrail, { RISK_COLORS } from '../components/RiskTrail';
+import TripSummaryModal from '../components/TripSummaryModal';
 import { hazardTypeFrom, voicePhraseFor } from '../lib/hazard';
+import { recommendFor } from '../lib/recommendations';
 import {
   colors,
   spacing,
@@ -118,42 +120,75 @@ const NIGHT_MAP_STYLE = [
 
 // ---------------------------------------------------------------------
 // Isolated user marker — only this subtree re-renders on each GPS tick.
+//
+// If we know the driver's heading, we render a navigation arrow that
+// tracks the travel direction (flat + rotation from the GPS heading).
+// When heading is unknown (no movement yet) we fall back to a plain
+// circle so the marker still shows the exact fix.
 // ---------------------------------------------------------------------
 const UserMarker = React.memo(function UserMarker({ coordinate, heading }) {
   if (!Marker || !coordinate) return null;
+  const hasHeading = Number.isFinite(heading) && heading >= 0 && heading <= 360;
   return (
     <Marker
       coordinate={coordinate}
       anchor={{ x: 0.5, y: 0.5 }}
       flat
-      rotation={Number.isFinite(heading) ? heading : 0}
+      rotation={hasHeading ? heading : 0}
       tracksViewChanges={false}
     >
-      <View style={markerStyles.outer}>
-        <View style={markerStyles.inner} />
+      <View style={markerStyles.halo}>
+        {hasHeading ? (
+          <View style={markerStyles.arrowBody}>
+            <MaterialCommunityIcons
+              name="navigation"
+              size={26}
+              color={colors.onPrimary}
+            />
+          </View>
+        ) : (
+          <View style={markerStyles.dotBody} />
+        )}
       </View>
     </Marker>
   );
 });
 
 const markerStyles = StyleSheet.create({
-  outer: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: 'rgba(17,17,17,0.18)',
+  halo: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: 'rgba(99, 102, 241, 0.20)',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  inner: {
+  arrowBody: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: colors.accent,
+    borderWidth: 3,
+    borderColor: colors.background,
+    alignItems: 'center',
+    // Shift the icon up a touch inside the circle so the arrow tip sits
+    // near the top edge of the disc — feels more like a compass needle.
+    paddingTop: 4,
+    shadowColor: '#000',
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 6,
+  },
+  dotBody: {
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: colors.primary,
+    backgroundColor: colors.accent,
     borderWidth: 4,
     borderColor: colors.background,
     shadowColor: '#000',
-    shadowOpacity: 0.35,
+    shadowOpacity: 0.3,
     shadowRadius: 6,
     shadowOffset: { width: 0, height: 2 },
     elevation: 6,
@@ -194,6 +229,8 @@ export default function LiveDriveScreen() {
   const [savingTrip, setSavingTrip] = useState(false);
   // Day / night map theme toggle — shows sun or moon icon.
   const [isNightMode, setIsNightMode] = useState(false);
+  // Post-trip summary modal data (null when not visible).
+  const [tripSummary, setTripSummary] = useState(null);
 
   // Refs: hot values read without re-renders.
   const mapRef = useRef(null);
@@ -295,38 +332,81 @@ export default function LiveDriveScreen() {
   }, []);
 
   const stopSession = useCallback(async () => {
-    // Snapshot what we need BEFORE teardown resets state.
+    // Snapshot all session data BEFORE teardown resets state, so we can
+    // both POST the trip and hand the numbers to the summary modal.
     const startedAt = sessionStartRef.current;
-    const routePoints = routeRef.current.slice();
+    const endedAt = new Date();
+    // Downsample before POST: a 30 min trip at 1 Hz is 1 800 points
+    // (~300 KB JSON) which some tunnels / proxies truncate with 503.
+    // 200 evenly-spaced points are plenty for the heatmap + history view.
+    const routePoints = downsampleRoute(routeRef.current, 200);
     const avg01 =
       riskCountRef.current > 0
         ? riskSumRef.current / riskCountRef.current
         : 0;
     const alerts = alertCount;
+    const conditionsSnapshot = latestRiskRef.current?.conditions ?? null;
+
+    // Aggregate post-trip metrics (distance + peak risk + max speed).
+    const distanceKm = haversineDistanceKm(routePoints);
+    const durationMinutes =
+      startedAt ? (endedAt.getTime() - startedAt.getTime()) / 60000 : null;
+    const peakRisk = routePoints.reduce(
+      (acc, p) => (typeof p.r_total === 'number' ? Math.max(acc, p.r_total) : acc),
+      0,
+    );
+    const maxSpeedKmh = routePoints.reduce(
+      (acc, p) => (typeof p.speed_kmh === 'number' ? Math.max(acc, p.speed_kmh) : acc),
+      0,
+    );
+
+    const summary = {
+      startedAt,
+      endedAt,
+      durationMinutes,
+      distanceKm,
+      avgRisk: clamp01(avg01),
+      peakRisk: clamp01(peakRisk),
+      alertCount: alerts,
+      maxSpeedKmh,
+      conditions: conditionsSnapshot,
+      saved: null,         // null = still saving; true / false after POST
+      saveError: null,
+    };
 
     teardownSession();
 
-    if (!token || !startedAt || routePoints.length === 0) return;
+    if (!token || !startedAt || routePoints.length === 0) {
+      // Still show a summary for instant feedback — just flag it unsaved.
+      setTripSummary({ ...summary, saved: false });
+      return;
+    }
 
     setSavingTrip(true);
+    // Show modal optimistically so the user sees their stats immediately.
+    setTripSummary({ ...summary, saved: null });
     try {
       await historyApi.create(token, {
         started_at: startedAt.toISOString(),
-        ended_at: new Date().toISOString(),
+        ended_at: endedAt.toISOString(),
         route: routePoints,
         average_r_total: clamp01(avg01),
         alert_count: alerts,
       });
+      setTripSummary((s) => (s ? { ...s, saved: true } : s));
     } catch (err) {
-      setPollError(
-        err instanceof ApiError
-          ? `Trip not saved: ${err.message}`
-          : 'Trip not saved. Please try again.',
+      const detail =
+        err instanceof ApiError ? err.message : 'Please try again.';
+      setPollError(`Trip not saved: ${detail}`);
+      setTripSummary((s) =>
+        s ? { ...s, saved: false, saveError: detail } : s,
       );
     } finally {
       setSavingTrip(false);
     }
   }, [alertCount, teardownSession, token]);
+
+  const onDismissSummary = useCallback(() => setTripSummary(null), []);
 
   // Full teardown on unmount (no trip POST — the user didn't press Stop).
   useEffect(() => () => teardownSession(), [teardownSession]);
@@ -388,7 +468,7 @@ export default function LiveDriveScreen() {
 
   // ----- Voice alert (must be declared before polling effect that uses it).
 
-  const speakHazard = useCallback((message) => {
+  const speakHazard = useCallback((message, riskLevel) => {
     // Fire-and-forget. expo-speech uses the platform TTS engine:
     //   iOS:     AVSpeechSynthesizer — respects the ringer silent switch
     //            (media category), so "Silent Mode" mutes the warning.
@@ -398,7 +478,7 @@ export default function LiveDriveScreen() {
     // entries can't queue up.
     try {
       Speech.stop();
-      Speech.speak(voicePhraseFor(hazardTypeFrom(message)), {
+      Speech.speak(voicePhraseFor(hazardTypeFrom(message, riskLevel)), {
         language: 'en-US',
         rate: 1.0,
         pitch: 1.0,
@@ -459,7 +539,7 @@ export default function LiveDriveScreen() {
           hazardActiveRef.current = true;
           setAlertCount((c) => c + 1);
           setAlertVisible(true);
-          speakHazard(result.alert_message);
+          speakHazard(result.alert_message, result.risk_level);
         } else if (hazardActiveRef.current && score < HAZARD_EXIT_SCORE) {
           hazardActiveRef.current = false;
         }
@@ -707,10 +787,17 @@ export default function LiveDriveScreen() {
 
       <AlertModal
         visible={alertVisible}
-        hazardType={hazardTypeFrom(risk?.alert_message)}
+        hazardType={hazardTypeFrom(risk?.alert_message, risk?.risk_level)}
         message={risk?.alert_message}
         riskScore={risk?.risk_score}
         onDismiss={onDismissAlert}
+      />
+
+      <TripSummaryModal
+        visible={tripSummary != null}
+        summary={tripSummary}
+        recommendation={tripSummary ? recommendFor(tripSummary) : null}
+        onDismiss={onDismissSummary}
       />
     </View>
   );
@@ -721,6 +808,54 @@ function clamp01(value) {
   if (value < 0) return 0;
   if (value > 1) return 1;
   return value;
+}
+
+// Evenly-stride a route down to at most `maxPoints`, always keeping the
+// first and last samples so the displayed line doesn't visually shrink
+// at the ends.
+function downsampleRoute(points, maxPoints) {
+  if (!Array.isArray(points) || points.length <= maxPoints) {
+    return points ? points.slice() : [];
+  }
+  const step = (points.length - 1) / (maxPoints - 1);
+  const out = [];
+  for (let i = 0; i < maxPoints; i += 1) {
+    out.push(points[Math.round(i * step)]);
+  }
+  // Guarantee the final fix is included as-is (already will be for
+  // integer `step` but float drift can clip it).
+  out[out.length - 1] = points[points.length - 1];
+  return out;
+}
+
+// Haversine great-circle distance in kilometres over a list of
+// {latitude, longitude} points. Returns 0 for <2 valid points.
+function haversineDistanceKm(points) {
+  if (!Array.isArray(points) || points.length < 2) return 0;
+  const R_KM = 6371;
+  const toRad = (d) => (d * Math.PI) / 180;
+  let total = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    const a = points[i - 1];
+    const b = points[i];
+    if (
+      typeof a?.latitude !== 'number' ||
+      typeof a?.longitude !== 'number' ||
+      typeof b?.latitude !== 'number' ||
+      typeof b?.longitude !== 'number'
+    ) {
+      continue;
+    }
+    const dLat = toRad(b.latitude - a.latitude);
+    const dLon = toRad(b.longitude - a.longitude);
+    const lat1 = toRad(a.latitude);
+    const lat2 = toRad(b.latitude);
+    const s =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+    total += 2 * R_KM * Math.asin(Math.min(1, Math.sqrt(s)));
+  }
+  return total;
 }
 
 // ---------------------------------------------------------------------

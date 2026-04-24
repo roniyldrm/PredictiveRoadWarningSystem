@@ -30,6 +30,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 
 import { useAuth } from '../auth/AuthContext';
 import { historyApi, ApiError } from '../api/client';
+import RiskHeatmapModal from '../components/RiskHeatmapModal';
 import {
   colors,
   spacing,
@@ -170,6 +171,7 @@ export default function HistoryScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState(null);
+  const [heatmapOpen, setHeatmapOpen] = useState(false);
 
   const loadTrips = useCallback(
     async ({ silent = false } = {}) => {
@@ -238,12 +240,57 @@ export default function HistoryScreen() {
     );
   }
 
+  const canOpenHeatmap = trips.some(
+    (t) =>
+      Array.isArray(t?.route) &&
+      t.route.some(
+        (p) =>
+          typeof p?.r_total === 'number' && p.r_total >= 0.3,
+      ),
+  );
+
   return (
     <View style={styles.container}>
       <FlatList
         data={trips}
         keyExtractor={(trip) => String(trip._id ?? trip.id)}
         renderItem={({ item }) => <TripCard trip={item} />}
+        ListHeaderComponent={
+          trips.length > 0 ? (
+            <TouchableOpacity
+              style={[
+                styles.heatmapCard,
+                !canOpenHeatmap && styles.heatmapCardDisabled,
+              ]}
+              onPress={() => canOpenHeatmap && setHeatmapOpen(true)}
+              disabled={!canOpenHeatmap}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="Open risk heatmap"
+            >
+              <View style={styles.heatmapIcon}>
+                <MaterialCommunityIcons
+                  name="fire"
+                  size={22}
+                  color={colors.onPrimary}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.heatmapTitle}>Risk Heatmap</Text>
+                <Text style={styles.heatmapSubtitle}>
+                  {canOpenHeatmap
+                    ? 'See where your trips hit the highest risk zones'
+                    : 'Drive a few more trips to build your heatmap'}
+                </Text>
+              </View>
+              <Ionicons
+                name="chevron-forward"
+                size={20}
+                color={colors.textSubtle}
+              />
+            </TouchableOpacity>
+          ) : null
+        }
         contentContainerStyle={
           trips.length === 0 ? styles.emptyContent : styles.listContent
         }
@@ -263,6 +310,12 @@ export default function HistoryScreen() {
             </Text>
           </View>
         }
+      />
+
+      <RiskHeatmapModal
+        visible={heatmapOpen}
+        trips={trips}
+        onClose={() => setHeatmapOpen(false)}
       />
     </View>
   );
@@ -304,6 +357,36 @@ const styles = StyleSheet.create({
   listContent: {
     padding: spacing.md,
     paddingBottom: 120,
+  },
+  heatmapCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    ...elevation.sm,
+  },
+  heatmapCardDisabled: {
+    opacity: 0.55,
+  },
+  heatmapIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: colors.danger,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: spacing.md,
+    ...elevation.sm,
+  },
+  heatmapTitle: {
+    ...typography.heading,
+    fontSize: 16,
+  },
+  heatmapSubtitle: {
+    ...typography.caption,
+    marginTop: 2,
   },
   emptyContent: {
     flexGrow: 1,

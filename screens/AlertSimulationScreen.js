@@ -144,7 +144,7 @@ export default function AlertSimulationScreen() {
   const { risk, takenAt, latitude, longitude } = snapshot;
   const conditions = risk.conditions || {};
   const tier = riskStyle(risk.risk_level);
-  const hazardType = hazardTypeFrom(risk.alert_message);
+  const hazardType = hazardTypeFrom(risk.alert_message, risk.risk_level);
   const scoreRounded = Math.round(risk.risk_score ?? 0);
 
   return (
