@@ -115,3 +115,24 @@ npx expo start
 Then press `i` / `a` / `w` for iOS simulator, Android emulator, or web. Full **map and GPS** behaviour is only meaningful on **iOS** or **Android**; web is useful for auth and non-map screens.
 
 ---
+
+## To manually test risk score with a lat and lon data use these commands on a seperate terminal
+
+# First call the login endpoint to get a token 
+
+```bash
+curl -X POST http://localhost:8000/api/auth/login \                                                
+  -H "Content-Type: application/json" \                                             
+  -d '{"email": "demo@roadsense.app", "password": "demo12345"}'
+```
+
+# Then insert your token and specify the override_lat, override_lon to test
+
+```bash
+curl -X POST http://localhost:8000/api/predict-risk \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer TOKEN_HERE" \
+  -d '{"latitude": 41.0082, "longitude": 28.9784, "override_lat": 51.5074, "override_lon": -0.1278}'
+```
+
+---

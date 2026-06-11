@@ -137,7 +137,11 @@ class AccidentsNearbyResponse(BaseModel):
 # --------------- real-time GPS-driven risk (OpenWeatherMap) ------------
 
 class PredictRiskRequest(BaseModel):
-    """GPS payload streamed by the mobile client."""
+    """GPS payload streamed by the mobile client.
+
+    Manuel mod: override_lat + override_lon verilirse model o koordinatlar
+    üzerinden çalışır. Verilmezse latitude + longitude (canlı GPS) kullanılır.
+    """
 
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
@@ -154,6 +158,15 @@ class PredictRiskRequest(BaseModel):
         gt=0,
         le=5000,
         description="Radius used to compute h_loc_count from accident_history.",
+    )
+    # --- Manuel koordinat override (UK test konumu vs.) ---
+    override_lat: Optional[float] = Field(
+        default=None, ge=-90, le=90,
+        description="Manuel mod: bu verilirse latitude yerine kullanılır.",
+    )
+    override_lon: Optional[float] = Field(
+        default=None, ge=-180, le=180,
+        description="Manuel mod: bu verilirse longitude yerine kullanılır.",
     )
 
 

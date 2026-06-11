@@ -21,7 +21,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
+from datetime import datetime
 from typing import Any, Dict, List
+
+# Terminale anında yazılsın, buffer'da beklemesin
+sys.stdout.reconfigure(line_buffering=True)
 
 from fastapi import APIRouter, HTTPException, status
 
@@ -31,6 +36,7 @@ from app.risk.formula import (
     ALPHA,
     BETA,
     GAMMA,
+    RiskComponents,
     build_alert_message,
     build_components,
     classify_risk_level,
@@ -47,6 +53,88 @@ from app.risk.weather import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["risk"])
+
+_DIVIDER = "─" * 57
+_WEEKDAY_NAMES = (
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+)
+
+
+def _print_predict_risk_report(
+    *,
+    latitude: float,
+    longitude: float,
+    day_of_week: int,
+    weather: RealTimeWeather,
+    h_loc_count: int,
+    components: RiskComponents,
+    alpha: float,
+    beta: float,
+    gamma: float,
+    ml_score: float,
+    r_total: float,
+    blended_score: float,
+    risk_level: str,
+    speed: float | None,
+    heading: float | None,
+) -> None:
+    """Structured terminal output for each /api/predict-risk request."""
+    now = datetime.utcnow()
+    day_name = _WEEKDAY_NAMES[max(0, min(6, day_of_week - 1))]
+    wind_kmh = weather.wind_speed * 3.6
+    h_score = round(components.h_loc * 100.0, 1)
+    w_score = round(components.w_t * 100.0, 1)
+    t_score = round(components.t_t * 100.0, 1)
+
+    print()
+    print(f"Location      {latitude:.4f}, {longitude:.4f}")
+    print(f"Time          {now.strftime('%H:%M')}  |  {day_name}")
+    print(
+        f"Weather       Rain: {weather.rain_mm:.1f}mm  |  "
+        f"Wind: {wind_kmh:.0f}km/h"
+    )
+    print(f"Visibility    {weather.visibility_m:.0f}m")
+    print(f"Temperature   {weather.temperature:.1f}°C")
+    print()
+    print(_DIVIDER)
+    print("INPUT                          CALCULATION")
+    print(_DIVIDER)
+    print(
+        f"H_loc  (α={alpha:g})  accidents: {h_loc_count}   "
+        f"→   score: {h_score:.1f}"
+    )
+    print(f"W_t    (β={beta:g})  weather        →   score: {w_score:.1f}")
+    print(f"T_t    (γ={gamma:g})  temporal       →   score: {t_score:.1f}")
+    print(_DIVIDER)
+    print(f"ML Model Output                →   {ml_score:.1f}")
+    print(f"R_total Formula                →   {r_total:.1f}")
+    print(_DIVIDER)
+    print(f"RISK LEVEL                     →   {risk_level.upper()}")
+    print(_DIVIDER)
+    print("RAW LOG")
+    print(_DIVIDER)
+    print(
+        f"lat={latitude:.5f}  lon={longitude:.5f}  "
+        f"speed={speed if speed is not None else 'N/A'}  "
+        f"heading={heading if heading is not None else 'N/A'}"
+    )
+    print(
+        f"h_loc={h_loc_count}  rain={weather.rain_mm:.2f}mm  "
+        f"vis={weather.visibility_m:.0f}m  wind={weather.wind_speed:.2f}m/s  "
+        f"temp={weather.temperature:.1f}C"
+    )
+    print(
+        f"ml={ml_score:.2f}  r_total={r_total:.2f}  "
+        f"blended={blended_score:.2f}  level={risk_level}"
+    )
+    print(_DIVIDER)
+    print()
 
 
 # ---------------------------------------------------------------------
@@ -120,13 +208,20 @@ async def predict_risk(
             detail="Risk model is not loaded on the server.",
         )
 
+    # Manuel override varsa onu kullan, yoksa canlı GPS koordinatı
+    lat = payload.override_lat if payload.override_lat is not None else payload.latitude
+    lon = payload.override_lon if payload.override_lon is not None else payload.longitude
+
+    if payload.override_lat is not None:
+        print(f"\n[MANUEL MOD]  override_lat={lat}  override_lon={lon}")
+
     # ---- 1. Fire weather + accident density in parallel ------------------
     weather_task = asyncio.create_task(
-        fetch_realtime_weather(payload.latitude, payload.longitude)
+        fetch_realtime_weather(lat, lon)
     )
     accidents_task = asyncio.create_task(
         _count_accidents_or_zero(
-            payload.latitude, payload.longitude, payload.nearby_radius_m
+            lat, lon, payload.nearby_radius_m
         )
     )
     weather_result, h_loc_count = await asyncio.gather(
@@ -153,8 +248,8 @@ async def predict_risk(
 
     # ---- 2. Build the 11-feature vector from the spec --------------------
     features = derive_feature_dict(
-        latitude=payload.latitude,
-        longitude=payload.longitude,
+        latitude=lat,
+        longitude=lon,
         h_loc_count=h_loc_count,
         rain_mm=weather.rain_mm,
         visibility_m=weather.visibility_m,
@@ -204,10 +299,28 @@ async def predict_risk(
         "predict-risk lat=%.5f lon=%.5f speed=%s heading=%s "
         "h_loc=%d rain=%.2fmm vis=%.0fm wind=%.2fm/s temp=%.1fC "
         "ml=%.2f r_total=%.2f -> %.2f (%s)",
-        payload.latitude, payload.longitude, payload.speed, payload.heading,
+        lat, lon, payload.speed, payload.heading,
         h_loc_count, weather.rain_mm, weather.visibility_m,
         weather.wind_speed, weather.temperature,
         ml_score, r_total, blended_score, risk_level,
+    )
+
+    _print_predict_risk_report(
+        latitude=lat,
+        longitude=lon,
+        day_of_week=int(features["day_of_week"]),
+        weather=weather,
+        h_loc_count=h_loc_count,
+        components=components,
+        alpha=weights["alpha"],
+        beta=weights["beta"],
+        gamma=weights["gamma"],
+        ml_score=ml_score,
+        r_total=r_total,
+        blended_score=blended_score,
+        risk_level=risk_level,
+        speed=payload.speed,
+        heading=payload.heading,
     )
 
     return PredictRiskResponse(

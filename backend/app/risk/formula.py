@@ -38,7 +38,7 @@ MAX_VISIBILITY_M = 10_000.0  # OpenWeatherMap caps reporting here
 MAX_HOUR = 23.0
 
 # Risk bands requested by the product spec.
-HIGH_THRESHOLD = 75.0
+HIGH_THRESHOLD = 50.0
 MEDIUM_THRESHOLD = 40.0
 
 
