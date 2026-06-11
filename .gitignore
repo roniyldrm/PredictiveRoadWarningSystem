@@ -40,3 +40,9 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+
+__pycache__/
+*.pyc
+*.pyo
+.pip-cache/
