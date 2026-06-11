@@ -116,9 +116,9 @@ Then press `i` / `a` / `w` for iOS simulator, Android emulator, or web. Full **m
 
 ---
 
-## To manually test risk score with a lat and lon data use these commands on a seperate terminal
+### To manually test risk score with a lat and lon data use these commands on a seperate terminal
 
-# First call the login endpoint to get a token 
+##### First call the login endpoint to get a token 
 
 ```bash
 curl -X POST http://localhost:8000/api/auth/login \                                                
@@ -126,7 +126,7 @@ curl -X POST http://localhost:8000/api/auth/login \
   -d '{"email": "demo@roadsense.app", "password": "demo12345"}'
 ```
 
-# Then insert your token and specify the override_lat, override_lon to test
+##### Then insert your token and specify the override_lat, override_lon to test
 
 ```bash
 curl -X POST http://localhost:8000/api/predict-risk \
